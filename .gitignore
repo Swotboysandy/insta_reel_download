@@ -1,0 +1,20 @@
+downloaded_reels/
+branded_videos/
+__pycache__/
+.env
+session-*
+*.mp4
+*.mkv
+*.mov
+*.avi
+*.webm
+
+# Front-end
+node_modules/
+frontend/node_modules/
+frontend/.next/
+frontend/.env.local
+
+# Unused/Private
+ScarperApi/
+F：﹨*
