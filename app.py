@@ -110,7 +110,7 @@ BRAND_DEFAULTS = {
     "video_watermark_path": "",  # Empty path or position="off" disables it.
     "video_watermark_position": "top-left",
     "video_watermark_width_fraction": 0.22,
-    "video_watermark_opacity": 0.3,
+    "video_watermark_opacity": 0.14,
     "source_watermarks": {},
     "source_watermark": {"enabled": False},
 }
