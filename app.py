@@ -101,6 +101,10 @@ BRAND_DEFAULTS = {
     "watermark_margin": 48,
     # Height of the unchanged profile card directly below the picture.
     "profile_footer_height": 220,
+    # Breathing room above the content stack, so the picture does not run into
+    # the very top edge of the frame. Also shortens the picture by the same
+    # amount. Only applies to the profile-footer style; "header" owns its top.
+    "content_top_padding": 120,
     # Normalized source coordinates [x, y, width, height], before scaling.
     # Example: {"fboy": {"enabled": True, "region": [.85, .25, .15, .08]}}
     "video_watermark_path": "",  # Empty path or position="off" disables it.
@@ -1240,7 +1244,11 @@ def _branding_filter(video_path, cfg, caption, profile_cfg, mask_top, mask_bot, 
     ph = panel.height
     if ph >= h:
         raise ValueError("Branding panel must fit inside the frame")
-    area_h = h-ph
+    top_pad = 0 if header else max(0, int(cfg.get("content_top_padding", 0) or 0))
+    if ph+top_pad >= h:
+        raise ValueError("Branding panel and top padding must fit inside the frame")
+    top_pad -= top_pad % 2
+    area_h = h-ph-top_pad
     account = os.path.basename(os.path.dirname(os.path.abspath(video_path))).lower()
     accounts = cfg.get("source_watermarks") or {}
     policy = accounts.get(account, cfg.get("source_watermark") or {})
@@ -1304,9 +1312,10 @@ def _branding_filter(video_path, cfg, caption, profile_cfg, mask_top, mask_bot, 
         stack_label = "stack"
     else:
         stack_label = "framed"
-    graph.append(f"[{stack_label}]pad={w}:{h}:0:{ph if header else 0}:color=black[base]")
+    content_y = ph if header else top_pad
+    graph.append(f"[{stack_label}]pad={w}:{h}:0:{content_y}:color=black[base]")
     panel, overlay_y = _composite_video_watermark(
-        panel, cfg, (w, h), (0, (ph if header else 0)+caption_h, w, picture_h),
+        panel, cfg, (w, h), (0, content_y+caption_h, w, picture_h),
         0 if header else h-ph)
     panel.save(overlay_path)
     graph.append(f"[base][1:v]overlay=0:{overlay_y}:format=auto,format=yuv420p[out]")
