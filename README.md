@@ -1,10 +1,9 @@
 # Reel Studio: Instagram Downloader & Branding Automator
 
-This project now contains:
+This project contains:
 
 - A Python/Flask backend in [`app.py`](./app.py) for Instagram download, preview generation, and branding/video processing.
-- A new Next.js frontend in [`frontend`](./frontend) that replaces the old server-rendered UI without removing any Python code.
-- The legacy Flask template in [`templates/index.html`](./templates/index.html), which is still present as a reference during the migration.
+- A Next.js frontend in [`frontend`](./frontend) for the UI.
 
 ## Stack
 
@@ -46,7 +45,6 @@ By default the frontend calls the Flask API at `http://127.0.0.1:5000` through `
 
 ## Notes
 
-- No Python processing code was removed or rewritten.
-- Downloaded videos still come from `downloaded_reels`.
-- Branded outputs still go to `branded_videos`.
-- If you want, the next step can be cleaning up Flask so it serves only the API while Next owns the UI completely.
+- Downloaded videos go to `downloaded_reels/`.
+- Branded outputs go to `branded_videos/`.
+- `download_history.json` records which shortcodes have been downloaded so profile crawls can skip them. Wiped automatically when "Delete All Videos" is clicked.

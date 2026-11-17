@@ -3,12 +3,12 @@ import "./globals.css";
 
 const inter = Inter({
   subsets: ["latin"],
-  variable: "--font-sans"
+  variable: "--font-sans",
 });
 
 export const metadata = {
   title: "Reel Studio",
-  description: "Instagram downloader and branding studio"
+  description: "Instagram downloader and branding studio",
 };
 
 export default function RootLayout({ children }) {
@@ -18,4 +18,3 @@ export default function RootLayout({ children }) {
     </html>
   );
 }
-
