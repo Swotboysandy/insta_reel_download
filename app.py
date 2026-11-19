@@ -535,7 +535,27 @@ def cleanup_low_views_runner(task_id, min_views, dry_run=False):
 # ═══════════════════════════════════════════════════════════════════════════════
 # SELENIUM: FETCH REELS / POSTS FROM PROFILE
 # ═══════════════════════════════════════════════════════════════════════════════
+# SeleniumBase UC mode defeats Instagram's bot wall, which otherwise serves a
+# login/consent shell: the feed never grows past ~985px and only the first dozen
+# links are reachable. Plain Selenium stays as the fallback.
+USE_SELENIUMBASE = os.getenv("USE_SELENIUMBASE", "1").strip() != "0"
+# UC mode is strongest with a real window. Set SB_HEADLESS=1 to hide it.
+SB_HEADLESS = os.getenv("SB_HEADLESS", "0").strip() == "1"
+
+
+def _create_seleniumbase_driver():
+    from seleniumbase import Driver
+    return Driver(uc=True, headless2=SB_HEADLESS, window_size="1920,1080",
+                  agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                        "(KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36")
+
+
 def _create_driver():
+    if USE_SELENIUMBASE:
+        try:
+            return _create_seleniumbase_driver()
+        except Exception as e:
+            print(f"SeleniumBase UC driver unavailable ({e}); falling back to plain Selenium.")
     options = Options()
     options.add_argument("--headless=new")
     options.add_argument("--window-size=1920,1080")

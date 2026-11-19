@@ -1,7 +1,9 @@
 flask==3.0.0
 flask-cors==4.0.0
 instaloader>=4.15
-selenium==4.16.0
+# SeleniumBase pulls its own Selenium and supplies UC mode, which is what
+# gets past Instagram's bot wall when scrolling a profile.
+seleniumbase>=4.58
 python-dotenv
 moviepy
 

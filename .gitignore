@@ -36,3 +36,6 @@ frontend/out/
 framing_qa/
 frontend/qa/
 .claude/
+
+# SeleniumBase UC driver downloads
+downloaded_files/
