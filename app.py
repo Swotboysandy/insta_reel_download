@@ -103,15 +103,22 @@ BRAND_DEFAULTS = {
     "fill_blur": 28,
     "watermark_margin": 48,
     # Height of the unchanged profile card directly below the picture.
-    "profile_footer_height": 220,
+    "profile_footer_height": 126,
     # Breathing room above the content stack, so the picture does not run into
     # the very top edge of the frame. Also shortens the picture by the same
     # amount. Only applies to the profile-footer style; "header" owns its top.
-    "content_top_padding": 260,
+    "content_top_padding": 300,
     # Matching gap between the bottom of the picture and the profile card, so
     # the picture reads as a centred card rather than something wedged against
     # the branding. Both gaps shorten the picture.
-    "content_bottom_gap": 170,
+    # Small gap between the picture and the identity row, so the row reads as
+    # part of the card rather than a separate band at the foot of the frame.
+    "content_bottom_gap": 26,
+    # Empty space below the identity row, which is what shrinks the picture.
+    "content_bottom_margin": 300,
+    # Draw the caption line under the handle. Off keeps the row to avatar,
+    # name, tick and handle only.
+    "footer_caption": False,
     # Normalized source coordinates [x, y, width, height], before scaling.
     # Example: {"fboy": {"enabled": True, "region": [.85, .25, .15, .08]}}
     "video_watermark_path": "",  # Empty path or position="off" disables it.
@@ -1128,6 +1135,10 @@ def _render_profile_footer(caption, cfg, profile_cfg):
         while d.textlength(handle, font=hf) > w-x-margin and len(handle) > 1:
             handle = handle[:-2] + "?"
         d.text((x, y+43), handle, font=hf, fill=(150, 150, 158))
+    if not cfg.get("footer_caption", True):
+        opacity = max(0., min(1., float(cfg.get("watermark_opacity", .92))))
+        img.putalpha(round(255 * opacity))
+        return img
     cy = y + size + 20
     cf = _find_font(min(int(cfg.get("font_size", 52)), 38))
     words = _sanitize_text(caption).split()
@@ -1279,11 +1290,13 @@ def _branding_filter(video_path, cfg, caption, profile_cfg, mask_top, mask_bot, 
         raise ValueError("Branding panel must fit inside the frame")
     top_pad = 0 if header else max(0, int(cfg.get("content_top_padding", 0) or 0))
     bottom_gap = 0 if header else max(0, int(cfg.get("content_bottom_gap", 0) or 0))
+    bottom_margin = 0 if header else max(0, int(cfg.get("content_bottom_margin", 0) or 0))
     top_pad -= top_pad % 2
     bottom_gap -= bottom_gap % 2
-    if ph+top_pad+bottom_gap >= h:
+    bottom_margin -= bottom_margin % 2
+    if ph+top_pad+bottom_gap+bottom_margin >= h:
         raise ValueError("Branding panel and gaps must fit inside the frame")
-    area_h = h-ph-top_pad-bottom_gap
+    area_h = h-ph-top_pad-bottom_gap-bottom_margin
     account = os.path.basename(os.path.dirname(os.path.abspath(video_path))).lower()
     accounts = cfg.get("source_watermarks") or {}
     policy = accounts.get(account, cfg.get("source_watermark") or {})
@@ -1351,7 +1364,7 @@ def _branding_filter(video_path, cfg, caption, profile_cfg, mask_top, mask_bot, 
     graph.append(f"[{stack_label}]pad={w}:{h}:0:{content_y}:color=black[base]")
     panel, overlay_y = _composite_video_watermark(
         panel, cfg, (w, h), (0, content_y+caption_h, w, picture_h),
-        0 if header else h-ph)
+        0 if header else content_y+caption_h+picture_h+bottom_gap)
     panel.save(overlay_path)
     graph.append(f"[base][1:v]overlay=0:{overlay_y}:format=auto,format=yuv420p[out]")
     return ";".join(graph)
