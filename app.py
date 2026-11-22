@@ -1,11 +1,15 @@
 # Instagram Reel Downloader + Video Branding Studio
 from flask import Flask, request, jsonify, send_from_directory
 from flask_cors import CORS
+from urllib.parse import urlsplit
+from werkzeug.exceptions import ClientDisconnected
+from werkzeug.utils import secure_filename
 import instaloader
 import os
 import random
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from functools import lru_cache
 import uuid
 import time
 import re
@@ -20,7 +24,6 @@ from dotenv import load_dotenv
 
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont, ImageFilter, ImageOps
-from moviepy import VideoFileClip, ImageClip, CompositeVideoClip, ColorClip
 
 from selenium import webdriver
 from selenium.webdriver.common.by import By
@@ -104,7 +107,11 @@ BRAND_DEFAULTS = {
     # Breathing room above the content stack, so the picture does not run into
     # the very top edge of the frame. Also shortens the picture by the same
     # amount. Only applies to the profile-footer style; "header" owns its top.
-    "content_top_padding": 120,
+    "content_top_padding": 260,
+    # Matching gap between the bottom of the picture and the profile card, so
+    # the picture reads as a centred card rather than something wedged against
+    # the branding. Both gaps shorten the picture.
+    "content_bottom_gap": 170,
     # Normalized source coordinates [x, y, width, height], before scaling.
     # Example: {"fboy": {"enabled": True, "region": [.85, .25, .15, .08]}}
     "video_watermark_path": "",  # Empty path or position="off" disables it.
@@ -144,13 +151,11 @@ def _resolve_brand_preset(cfg=None, profile_cfg=None):
     return cfg, profile
 
 
-# Branding render settings. "medium" preset on 4 threads was taking ~6 min a
-# video; veryfast + all cores + parallel workers cuts that dramatically for a
-# negligible size increase at reel bitrates. Tune via .env if needed.
-BRAND_WORKERS = int(os.getenv("BRAND_WORKERS", "3"))
+# All batch workers and previews share this process-wide limit.
+BRAND_WORKERS = max(1, int(os.getenv("BRAND_WORKERS", "1")))
 BRAND_PRESET = os.getenv("BRAND_PRESET", "veryfast")
-# threads per render; 0 lets ffmpeg pick. With N workers, cap so they don't thrash.
-BRAND_THREADS = int(os.getenv("BRAND_THREADS", str(max(2, (os.cpu_count() or 4) // max(1, BRAND_WORKERS)))))
+BRAND_THREADS = int(os.getenv("BRAND_THREADS", "2"))
+BRAND_RENDER_SLOTS = threading.BoundedSemaphore(BRAND_WORKERS)
 
 download_tasks = {}
 brand_tasks = {}
@@ -767,6 +772,8 @@ def _scroll_and_collect(driver, link_type, max_items, task_id):
 # ═══════════════════════════════════════════════════════════════════════════════
 def download_task(task_id, urls, is_profile=False, max_reels=300, mode='reel'):
     target_username = "unknown"
+    if not is_profile:
+        get_logged_in_loader()
     if is_profile and len(urls) == 1:
         target_username = extract_username_from_profile(urls[0])
         if target_username:
@@ -1148,6 +1155,12 @@ def _render_profile_footer(caption, cfg, profile_cfg):
 
 
 def _source_framing(video_path):
+    stat = os.stat(video_path)
+    return _measure_source_framing(video_path, stat.st_size, stat.st_mtime_ns)
+
+
+@lru_cache(maxsize=128)
+def _measure_source_framing(video_path, file_size, modified_ns):
     """Measure embedded black canvas separately from caption and moving picture.
 
     Sample real source frames once per export, before scaling. A full-frame or
@@ -1162,7 +1175,7 @@ def _source_framing(video_path):
     for fraction in (.1, .5, .9):
         result = subprocess.run([
             _ffmpeg_exe(), "-v", "error", "-ss", str(info["duration"] * fraction),
-            "-i", video_path, "-frames:v", "1", "-vf",
+            "-threads", "1", "-i", video_path, "-frames:v", "1", "-vf",
             f"scale={sample_w}:{sample_h},format=gray", "-threads", "1",
             "-f", "rawvideo", "pipe:1"], capture_output=True, check=True)
         if len(result.stdout) != sample_w * sample_h:
@@ -1265,10 +1278,12 @@ def _branding_filter(video_path, cfg, caption, profile_cfg, mask_top, mask_bot, 
     if ph >= h:
         raise ValueError("Branding panel must fit inside the frame")
     top_pad = 0 if header else max(0, int(cfg.get("content_top_padding", 0) or 0))
-    if ph+top_pad >= h:
-        raise ValueError("Branding panel and top padding must fit inside the frame")
+    bottom_gap = 0 if header else max(0, int(cfg.get("content_bottom_gap", 0) or 0))
     top_pad -= top_pad % 2
-    area_h = h-ph-top_pad
+    bottom_gap -= bottom_gap % 2
+    if ph+top_pad+bottom_gap >= h:
+        raise ValueError("Branding panel and gaps must fit inside the frame")
+    area_h = h-ph-top_pad-bottom_gap
     account = os.path.basename(os.path.dirname(os.path.abspath(video_path))).lower()
     accounts = cfg.get("source_watermarks") or {}
     policy = accounts.get(account, cfg.get("source_watermark") or {})
@@ -1343,35 +1358,54 @@ def _branding_filter(video_path, cfg, caption, profile_cfg, mask_top, mask_bot, 
 
 
 def _source_video_info(video_path):
+    stat = os.stat(video_path)
+    return _read_source_info(video_path, stat.st_size, stat.st_mtime_ns)
+
+
+@lru_cache(maxsize=128)
+def _read_source_info(video_path, file_size, modified_ns):
     import imageio_ffmpeg
-    reader = imageio_ffmpeg.read_frames(video_path)
+    reader = imageio_ffmpeg.read_frames(video_path, input_params=["-threads", "1"])
     try:
         return next(reader)
     finally:
         reader.close()
 
 
-def _run_brand_ffmpeg(video_path, output_path, caption, cfg, profile_cfg, mask_top=0, mask_bot=0, preview=False):
+def _run_brand_ffmpeg(video_path, output_path, caption, cfg, profile_cfg, mask_top=0, mask_bot=0, preview=False, quick=False):
+    with BRAND_RENDER_SLOTS:
+        return _encode_brand(video_path, output_path, caption, cfg, profile_cfg, mask_top, mask_bot, preview, quick)
+
+
+def _encode_brand(video_path, output_path, caption, cfg, profile_cfg, mask_top, mask_bot, preview=False, quick=False):
     cfg, profile_cfg = _resolve_brand_preset(cfg, profile_cfg)
     cfg = {**BRAND_DEFAULTS, **cfg}
-    if preview:
+    if preview and not quick:
         # Decode the actual delivery encode: pre-encode PNGs cannot be pixel
         # identical to a CRF export. Encode the full stream so GOP/lookahead and
         # rate control match export, including frames after the preview stamp.
         with tempfile.TemporaryDirectory(prefix="reel-preview-encode-") as tmp:
             encoded = os.path.join(tmp, "delivery.mp4")
-            _run_brand_ffmpeg(video_path, encoded, caption, cfg, profile_cfg,
-                              mask_top, mask_bot)
+            _encode_brand(video_path, encoded, caption, cfg, profile_cfg, mask_top, mask_bot)
             stamp = min(1., _source_video_info(video_path)["duration"] / 2)
-            subprocess.run([_ffmpeg_exe(), "-y", "-v", "error", "-i", encoded,
+            subprocess.run([_ffmpeg_exe(), "-y", "-v", "error", "-threads", "1", "-i", encoded,
                             "-ss", str(stamp), "-frames:v", "1", "-threads", "1",
                             output_path], check=True, capture_output=True)
         return output_path
     with tempfile.TemporaryDirectory(prefix="reel-brand-") as tmp:
         overlay = os.path.join(tmp, "branding.png")
         graph = _branding_filter(video_path, cfg, caption, profile_cfg, mask_top, mask_bot, overlay)
-        cmd = [_ffmpeg_exe(), "-y", "-v", "error", "-filter_complex_threads", "1", "-i", video_path, "-i", overlay,
-               "-filter_complex", graph, "-map", "[out]"]
+        cmd = [_ffmpeg_exe(), "-y", "-v", "error", "-filter_complex_threads", "1"]
+        if preview:
+            stamp = min(1., _source_video_info(video_path)["duration"] / 2)
+            cmd += ["-ss", str(stamp)]
+        cmd += ["-threads", str(BRAND_THREADS), "-i", video_path, "-threads", "1", "-i", overlay]
+        if preview:
+            graph += ";[out]scale='min(540,iw)':-2[still]"
+            subprocess.run(cmd + ["-filter_complex", graph, "-map", "[still]", "-frames:v", "1",
+                                  "-threads", "1", output_path], check=True, capture_output=True)
+            return output_path
+        cmd += ["-filter_complex", graph, "-map", "[out]"]
         cmd += ["-map", "0:a?", "-c:v", "libx264", "-preset", BRAND_PRESET,
                 # Delivery quality: crisp text without lossless upload sizes.
                 "-crf", "22", "-pix_fmt", "yuv420p", "-threads", str(BRAND_THREADS),
@@ -1400,12 +1434,12 @@ def _job_brand_config(video_path, cfg):
     return merged
 
 
-def generate_preview_image(video_path, caption, cfg=None, profile_cfg=None, mask_top=0, mask_bot=0):
-    """PNG decoded from the same CRF delivery encode used by exports."""
+def generate_preview_image(video_path, caption, cfg=None, profile_cfg=None, mask_top=0, mask_bot=0, quick=False):
+    """Return a delivery-encoded still, or a single composited frame for the editor."""
     cfg = _job_brand_config(video_path, cfg)
     with tempfile.TemporaryDirectory(prefix="reel-preview-") as tmp:
         path = os.path.join(tmp, "preview.png")
-        _run_brand_ffmpeg(video_path, path, caption, cfg, profile_cfg, mask_top, mask_bot, preview=True)
+        _run_brand_ffmpeg(video_path, path, caption, cfg, profile_cfg, mask_top, mask_bot, preview=True, quick=quick)
         with open(path, "rb") as image:
             return base64.b64encode(image.read()).decode("utf-8")
 
@@ -1485,7 +1519,12 @@ def brand_single_video(video_path, caption, cfg=None, profile_cfg=None, output_p
         base = os.path.splitext(os.path.basename(video_path))[0]
         output_path = os.path.join(dest, f"{base}_branded.mp4")
     log_task(task_id, f"Rendering: {os.path.basename(output_path)}", brand_tasks)
-    return _run_brand_ffmpeg(video_path, output_path, caption, cfg, profile_cfg, mask_top, mask_bot)
+    # Keep unfinished renders out of the upload list and preserve earlier exports on failure.
+    with tempfile.TemporaryDirectory(dir=os.path.dirname(os.path.abspath(output_path))) as scratch:
+        pending = os.path.join(scratch, os.path.basename(output_path))
+        _run_brand_ffmpeg(video_path, pending, caption, cfg, profile_cfg, mask_top, mask_bot)
+        os.replace(pending, output_path)
+    return output_path
 
 
 def brand_task_runner(task_id, videos, caption, cfg, profile_cfg, mask_top=0, mask_bot=0, output_folder=None):
@@ -1708,6 +1747,78 @@ def get_cleanup_status(task_id):
     return jsonify(cleanup_tasks[task_id])
 
 # --- File Browser APIs ---
+IMPORT_FOLDER = os.path.join(DOWNLOAD_FOLDER, 'Imports')
+MAX_IMPORT_BYTES = 512 * 1024 * 1024
+LOCAL_HOSTS = {'127.0.0.1', '::1', 'localhost'}
+
+
+@app.route('/api/library/import', methods=['POST'])
+def import_local_clip():
+    """Stream one clip to the local library and publish it only after the copy finishes."""
+    origin = request.headers.get('Origin')
+    try:
+        local_request = (request.remote_addr in LOCAL_HOSTS and
+                         urlsplit(request.host_url).hostname in LOCAL_HOSTS and
+                         (not origin or urlsplit(origin).hostname in LOCAL_HOSTS))
+    except ValueError:
+        local_request = False
+    if not local_request:
+        return jsonify(error='Open Reel Studio on this PC to import clips.'), 403
+
+    source_name = request.args.get('name', '')
+    stem, ext = os.path.splitext(source_name)
+    if ext.lower() != '.mp4' or request.mimetype != 'video/mp4':
+        return jsonify(error='Choose an MP4 video.'), 415
+    length = request.content_length
+    if length is None:
+        return jsonify(error='The file size is required.'), 411
+    if length > MAX_IMPORT_BYTES:
+        return jsonify(error='Choose an MP4 of 512 MiB or less.'), 413
+    if length < 16:
+        return jsonify(error='This file is too short to be an MP4.'), 422
+
+    temp_path = None
+    try:
+        stream = request.stream
+        header = stream.read(16)
+        box_size = int.from_bytes(header[:4], 'big')
+        if header[4:8] != b'ftyp' or not 16 <= box_size <= length:
+            return jsonify(error='This file lacks a valid MP4 file-type header.'), 422
+        os.makedirs(IMPORT_FOLDER, exist_ok=True)
+        with tempfile.NamedTemporaryFile(dir=IMPORT_FOLDER, suffix='.part', delete=False) as out:
+            temp_path = out.name
+            out.write(header)
+            remaining = length - len(header)
+            while remaining:
+                chunk = stream.read(min(256 * 1024, remaining))
+                if not chunk:
+                    return jsonify(error='Upload interrupted. Select the clip again.'), 400
+                out.write(chunk)
+                remaining -= len(chunk)
+
+        # The suffix also keeps branding outputs distinct for clips with matching titles.
+        title = secure_filename(stem)[:80] or 'clip'
+        filename = f'{title}-{uuid.uuid4().hex[:12]}.mp4'
+        final_path = os.path.join(IMPORT_FOLDER, filename)
+        os.replace(temp_path, final_path)
+        temp_path = None
+    except ClientDisconnected:
+        return jsonify(error='Upload interrupted. Select the clip again.'), 400
+    except OSError:
+        app.logger.exception('Could not save the imported clip')
+        return jsonify(error='Could not save the clip. Check free disk space and folder access.'), 500
+    finally:
+        if temp_path is not None:
+            try:
+                os.unlink(temp_path)
+            except FileNotFoundError:
+                pass
+
+    return jsonify(name=filename, path=final_path.replace('\\', '/'),
+                   rel_path=f'Imports/{filename}', size_mb=round(length / 1048576, 2),
+                   folder='Imports'), 201
+
+
 @app.route('/api/files', methods=['GET'])
 def list_video_files():
     """List all downloaded video files available for branding."""
@@ -1715,7 +1826,7 @@ def list_video_files():
     for root, dirs, filenames in os.walk(DOWNLOAD_FOLDER):
         for f in sorted(filenames):
             ext = os.path.splitext(f)[1].lower()
-            if ext in VIDEO_EXTENSIONS and '_branded' not in f:
+            if ext in VIDEO_EXTENSIONS and (root == IMPORT_FOLDER or '_branded' not in f):
                 full_path = os.path.join(root, f)
                 rel_path = os.path.relpath(full_path, DOWNLOAD_FOLDER)
                 size_mb = os.path.getsize(full_path) / (1024 * 1024)
@@ -1742,11 +1853,15 @@ def list_branded_files():
         ext = os.path.splitext(f)[1].lower()
         if ext in VIDEO_EXTENSIONS:
             full_path = os.path.join(folder, f)
-            size_mb = os.path.getsize(full_path) / (1024 * 1024)
+            try:
+                stat = os.stat(full_path)
+            except FileNotFoundError:
+                continue
             files.append({
                 'name': f,
                 'path': full_path.replace('\\', '/'),
-                'size_mb': round(size_mb, 2)
+                'size_mb': round(stat.st_size / (1024 * 1024), 2),
+                'modified': stat.st_mtime
             })
     return jsonify({
         'files': files,
@@ -1788,7 +1903,7 @@ def brand_preview():
         warning = f'Logo file not found: {logo}'
 
     try:
-        b64 = generate_preview_image(video_path, caption, cfg, profile_cfg, mask_top, mask_bot)
+        b64 = generate_preview_image(video_path, caption, cfg, profile_cfg, mask_top, mask_bot, quick=data.get("quick") is True)
         return jsonify({'preview': b64, 'warning': warning})
     except Exception as e:
         return jsonify({'error': str(e)}), 500
@@ -1865,7 +1980,8 @@ def serve_video(filepath):
     directory = os.path.dirname(full_path)
     filename = os.path.basename(full_path)
     mimetype = mimetypes.guess_type(filename)[0] or 'video/mp4'
-    return send_from_directory(directory, filename, mimetype=mimetype)
+    return send_from_directory(directory, filename, mimetype=mimetype,
+                               as_attachment=request.args.get('download') == '1')
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -1875,7 +1991,6 @@ if __name__ == '__main__':
     import sys
     sys.stdout.reconfigure(encoding='utf-8', errors='replace')
     print("Starting Instagram Reel Downloader + Branding Studio...")
-    get_logged_in_loader()
     # Bind to localhost by default. The old 0.0.0.0 + debug=True combination
     # exposed the Werkzeug debug console (code execution) to the whole LAN.
     # Override deliberately with HOST/PORT/FLASK_DEBUG if you need remote access.
