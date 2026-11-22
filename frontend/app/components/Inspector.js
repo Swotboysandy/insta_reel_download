@@ -13,19 +13,27 @@ export default function Inspector({ s, reviewed }) {
         </div>
       </div>
       <div className="inspectorScroll">
-        <Section title="Layout & framing">
-          <Field label="Branding style">
+        <div className="settingsBody">
+          <Field label="Brand preset" hint="Apply a page’s avatar, handle and watermark together.">
             {(id) => (
-              <select id={id} value="header" disabled>
-                <option value="header">Header</option>
-                <option value="watermark">Corner watermark</option>
+              <select id={id} value={form.brandPreset} onChange={(e) => s.applyBrandPreset(e.target.value)}>
+                <option value="">Custom identity</option>
+                {s.brandPresets.map((preset) => (
+                  <option key={preset.id} value={preset.id}>{preset.page_name}</option>
+                ))}
               </select>
             )}
           </Field>
-          <p className="hint">
-            Header branding is available. Watermark styling and zoom are not
-            connected in this version.
-          </p>
+        </div>
+        <Section title="Layout & framing" open={false}>
+          <Field label="Branding style">
+            {(id) => (
+              <select id={id} value={form.style} onChange={(e) => update("style")(e.target.value)}>
+                <option value="watermark">Profile below footage</option>
+                <option value="header">Header above footage</option>
+              </select>
+            )}
+          </Field>
           <div className="twoFields">
             <Input
               label="Background"
@@ -51,7 +59,7 @@ export default function Inspector({ s, reviewed }) {
                     id={id}
                     type="range"
                     min="0"
-                    max="50"
+                    max="45"
                     value={form[key]}
                     onChange={(e) => s.updateBrandForm(key, e.target.value)}
                   />
@@ -59,7 +67,7 @@ export default function Inspector({ s, reviewed }) {
               </Field>
             ))}
           </div>
-          <Field label="Zoom">
+          <Field label={`Zoom · ${Number(form.zoom).toFixed(2)}×`}>
             {(id) => (
               <input
                 id={id}
@@ -67,13 +75,13 @@ export default function Inspector({ s, reviewed }) {
                 min="1"
                 max="2"
                 step="0.01"
-                value="1"
-                disabled
+                value={form.zoom}
+                onChange={(e) => update("zoom")(e.target.value)}
               />
             )}
           </Field>
         </Section>
-        <Section title="Page identity">
+        <Section title="Page identity" open={false}>
           <Input
             label="Page name"
             value={form.pageName}
@@ -124,27 +132,41 @@ export default function Inspector({ s, reviewed }) {
             onChange={update("captionFontSize")}
           />
         </Section>
-        <Section title="Watermark" open={false}>
-          <p className="hint">
-            Watermark settings are not connected in this version.
-          </p>
-          <fieldset disabled>
+        {form.brandPreset && (
+          <Section title="Watermark" open={false}>
             <Field label="Position">
               {(id) => (
-                <select id={id}>
-                  <option>Bottom right</option>
+                <select
+                  id={id}
+                  value={form.watermarkPosition}
+                  onChange={(e) => update("watermarkPosition")(e.target.value)}
+                >
+                  <option value="top-left">Top left</option>
+                  <option value="top-right">Top right</option>
+                  <option value="bottom-left">Bottom left</option>
+                  <option value="bottom-right">Bottom right</option>
+                  <option value="off">Off</option>
                 </select>
               )}
             </Field>
             <Input
-              label="Opacity"
+              label={`Opacity · ${form.watermarkOpacity}%`}
               type="range"
-              value="55"
-              onChange={() => {}}
+              min="0"
+              max="100"
+              value={form.watermarkOpacity}
+              onChange={update("watermarkOpacity")}
             />
-            <Input label="Scale" type="range" value="50" onChange={() => {}} />
-          </fieldset>
-        </Section>
+            <Input
+              label={`Width · ${form.watermarkWidth}%`}
+              type="range"
+              min="1"
+              max="100"
+              value={form.watermarkWidth}
+              onChange={update("watermarkWidth")}
+            />
+          </Section>
+        )}
         <Section title="Files & background" open={false}>
           <Input
             label="Background image path"
@@ -168,7 +190,7 @@ export default function Inspector({ s, reviewed }) {
             {!s.selectedVideos.length
               ? "Select clips to begin"
               : !s.previewFresh
-                ? "Wait for a current preview"
+                ? "Generate a preview to check the frame"
                 : !reviewed
                   ? "Review the preview to continue"
                   : "Ready to render with these settings"}
@@ -178,6 +200,7 @@ export default function Inspector({ s, reviewed }) {
           primary
           busy={s.brandTask.state === "processing"}
           disabled={
+            !!s.clipImport?.name ||
             !s.selectedVideos.length ||
             !s.previewFresh ||
             !reviewed ||

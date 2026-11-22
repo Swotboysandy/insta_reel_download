@@ -7,9 +7,10 @@ set PYTHONIOENCODING=utf-8
 set OPEN_BROWSER=1
 
 rem Build the interface the first time, or after you change the frontend.
-if not exist "frontend\out\index.html" (
+powershell -NoProfile -Command "$out = Get-Item -LiteralPath 'frontend/out/index.html' -ErrorAction SilentlyContinue; if (!$out) { exit 1 }; $inputs = @(Get-ChildItem 'frontend/app' -Recurse -File) + @(Get-Item 'frontend/package.json','frontend/package-lock.json','frontend/next.config.mjs'); if ($inputs | Where-Object LastWriteTimeUtc -gt $out.LastWriteTimeUtc | Select-Object -First 1) { exit 1 }; exit 0"
+if errorlevel 1 (
   echo.
-  echo   Building the interface for the first time. This takes about a minute...
+  echo   Building updated interface...
   echo.
   pushd frontend
   call npm run build

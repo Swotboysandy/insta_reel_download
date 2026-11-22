@@ -6,9 +6,10 @@ import {
   SlidersHorizontal,
   Film,
   X,
-  ArrowUpRight,
+  HardDrive,
 } from "lucide-react";
 import { useStudio } from "./hooks/useStudio";
+import ImportClips from "./components/ImportClips";
 import Library from "./components/Library";
 import Preview from "./components/Preview";
 import Inspector from "./components/Inspector";
@@ -20,11 +21,7 @@ import {
 export default function HomePage() {
   const s = useStudio();
   const [reviewKey, setReviewKey] = useState("");
-  const currentKey = JSON.stringify([
-    s.brandForm,
-    s.selectedVideos[0],
-    s.previewImage,
-  ]);
+  const currentKey = s.previewRevision;
   const reviewed = reviewKey === currentKey && s.previewFresh;
   return (
     <div className="pageShell">
@@ -42,7 +39,7 @@ export default function HomePage() {
             @{s.brandForm.handle.replace(/^@/, "") || "your page"}
           </span>
         </div>
-        <span className="headerNote">Your daily reel desk</span>
+        <span className="headerNote"><HardDrive size={14} /> On this PC</span>
       </header>
       <nav className="workspaceNav" aria-label="Workspace">
         {[
@@ -82,22 +79,12 @@ export default function HomePage() {
             </h2>
             <p>
               {s.activeTab === "brand"
-                ? "Choose clips, check the frame, then render your batch."
+                ? "Import clips, choose a brand, and review a frame before rendering."
                 : s.activeTab === "download"
                   ? "Bring reels into your library from Instagram."
-                  : "Watch the finished video before you publish."}
+                  : "Preview a finished clip or copy its path for upload."}
             </p>
           </div>
-          {s.activeTab === "brand" && (
-            <button
-              className="textButton"
-              onClick={() => s.setActiveTab("download")}
-            >
-              <Download size={16} />
-              Add reels
-              <ArrowUpRight size={14} />
-            </button>
-          )}
         </div>
         {s.errorMessage && (
           <div className="errorBanner" role="alert">
@@ -112,15 +99,18 @@ export default function HomePage() {
           </div>
         )}
         {s.activeTab === "brand" ? (
-          <div className="editorWorkspace">
-            <Library s={s} />
-            <Preview
-              s={s}
-              reviewed={reviewed}
-              onReview={(v) => setReviewKey(v ? currentKey : "")}
-            />
-            <Inspector s={s} reviewed={reviewed} />
-          </div>
+          <>
+            <ImportClips state={s.clipImport} onImport={s.importClips} />
+            <div className="editorWorkspace">
+              <Library s={s} />
+              <Preview
+                s={s}
+                reviewed={reviewed}
+                onReview={(v) => setReviewKey(v ? currentKey : "")}
+              />
+              <Inspector s={s} reviewed={reviewed} />
+            </div>
+          </>
         ) : s.activeTab === "download" ? (
           <DownloadWorkspace s={s} />
         ) : (

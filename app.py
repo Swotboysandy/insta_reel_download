@@ -5,6 +5,7 @@ from urllib.parse import urlsplit
 from werkzeug.exceptions import ClientDisconnected
 from werkzeug.utils import secure_filename
 import instaloader
+import browser_media
 import os
 import random
 import threading
@@ -777,6 +778,64 @@ def _scroll_and_collect(driver, link_type, max_items, task_id):
 # ═══════════════════════════════════════════════════════════════════════════════
 # DOWNLOAD LOGIC
 # ═══════════════════════════════════════════════════════════════════════════════
+def _browser_download_phase(task_id, urls, target_username, mode):
+    """Fetch each permalink through the logged-in browser and record results."""
+    save_dir = os.path.join(DOWNLOAD_FOLDER,
+                            target_username if target_username != "unknown" else "singles")
+    os.makedirs(save_dir, exist_ok=True)
+    log_task(task_id, f"⬇️ Starting browser downloads ({mode} mode, 1 worker)...")
+
+    loader = get_logged_in_loader()
+    if not loader:
+        download_tasks[task_id]['state'] = 'completed'
+        download_tasks[task_id]['results'] = []
+        download_tasks[task_id]['completed_at'] = time.time()
+        log_task(task_id, "❌ No Instagram session. Check IG_USERNAME/IG_PASSWORD in .env.")
+        return
+
+    cookies = browser_media.cookie_dicts(loader)
+    jar = {c['name']: c['value'] for c in cookies}
+    results = []
+    success = 0
+    driver = _create_driver()
+    try:
+        if not browser_media.sign_in(driver, cookies):
+            log_task(task_id, "❌ Session cookies rejected by Instagram; log in again.")
+            return
+        for index, url in enumerate(urls, 1):
+            download_tasks[task_id]['current'] = index
+            shortcode = extract_shortcode(url) or url.rstrip('/').split('/')[-1]
+            try:
+                if mode == 'post' and '/p/' in url:
+                    status, count = browser_media.download_images(driver, jar, url, save_dir)
+                    path = None
+                else:
+                    status, path = browser_media.download_video(driver, jar, url, save_dir)
+                ok = status in ('ok', 'skip')
+                results.append({'success': ok, 'shortcode': shortcode,
+                                'url': url, 'error': None if ok else status})
+                if ok:
+                    success += 1
+                    _record_download(shortcode, url, target_username, mode, file_path=path)
+                    log_task(task_id, f"✅ {index}/{len(urls)}: {shortcode}")
+                else:
+                    log_task(task_id, f"❌ {index}/{len(urls)}: {shortcode} — {status}")
+            except Exception as exc:
+                results.append({'success': False, 'shortcode': shortcode,
+                                'url': url, 'error': str(exc)[:200]})
+                log_task(task_id, f"❌ {index}/{len(urls)}: {shortcode} — {exc}")
+    finally:
+        try:
+            driver.quit()
+        except Exception:
+            pass
+
+    download_tasks[task_id]['state'] = 'completed'
+    download_tasks[task_id]['results'] = results
+    download_tasks[task_id]['completed_at'] = time.time()
+    log_task(task_id, f"🎉 Done! Downloaded {success}/{len(urls)}. Saved to: {save_dir}")
+
+
 def download_task(task_id, urls, is_profile=False, max_reels=300, mode='reel'):
     target_username = "unknown"
     if not is_profile:
@@ -810,6 +869,14 @@ def download_task(task_id, urls, is_profile=False, max_reels=300, mode='reel'):
                 log_task(task_id, "✅ Nothing new to download — everything is already in history.")
                 return
             download_tasks[task_id]['total'] = len(urls)
+
+    # Instagram's graphql API now 401s for every session, so the default path
+    # drives a logged-in browser instead. One driver, used sequentially: the
+    # browser is not thread-safe, and the old parallel Instaloader path only
+    # produced 401s. Set BROWSER_DOWNLOAD=0 to fall back to it.
+    if os.getenv("BROWSER_DOWNLOAD", "1").strip() != "0":
+        _browser_download_phase(task_id, urls, target_username, mode)
+        return
 
     # Download phase — parallel workers, each with its own Instaloader context
     log_task(task_id, f"⬇️ Starting downloads ({mode} mode, {DOWNLOAD_WORKERS} workers)...")

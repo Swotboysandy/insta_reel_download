@@ -6,6 +6,12 @@ const DL_STORAGE_KEY = "reelStudio.downloadForm.v1";
 const CAPTION_LIMIT = 280;
 
 const brandDefaults = {
+  brandPreset: "",
+  style: "watermark",
+  zoom: 1,
+  watermarkPosition: "top-left",
+  watermarkOpacity: 14,
+  watermarkWidth: 22,
   pageName: "epicmemeoclock",
   handle: "@epicmemeoclock",
   logoColor: "#ffffff",
@@ -73,6 +79,12 @@ function buildProfileConfig(brandForm) {
 
 function buildConfig(brandForm) {
   return {
+    ...(brandForm.brandPreset && { brand_preset: brandForm.brandPreset }),
+    style: brandForm.style === "header" ? "header" : "watermark",
+    zoom_factor: Number(brandForm.zoom) || 1,
+    video_watermark_position: brandForm.watermarkPosition || "top-left",
+    video_watermark_opacity: Number(brandForm.watermarkOpacity ?? 14) / 100,
+    video_watermark_width_fraction: Number(brandForm.watermarkWidth ?? 22) / 100,
     bg_color: toRgbArray(brandForm.bgColor),
     text_color: toRgbArray(brandForm.textColor),
     bg_path: cleanPath(brandForm.bgPath),

@@ -1,0 +1,80 @@
+.toolbar {
+  padding: 0 16px 12px;
+  border-bottom: 1px solid var(--border);
+}
+.toolbar input {
+  width: 100%;
+}
+.results {
+  margin: 8px 0 0;
+  color: var(--muted);
+  font-size: 12px;
+}
+.card {
+  padding: 14px 4px;
+  border-bottom: 1px solid var(--border);
+}
+.card:last-child {
+  border-bottom: 0;
+}
+.row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+.fileIcon {
+  display: grid;
+  place-items: center;
+  color: var(--ok);
+  background: var(--surface2);
+  width: 36px;
+  height: 40px;
+  border-radius: 8px;
+}
+.fileDetails {
+  flex: 1 1 115px;
+  min-width: 0;
+}
+.fileDetails h3 {
+  overflow-wrap: anywhere;
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1.35;
+  margin: 0;
+}
+.fileDetails p {
+  margin: 4px 0 0;
+  font-size: 11px;
+  color: var(--muted);
+}
+.actions, .pagination {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.feedback, .manualPath {
+  display: block;
+  font-size: 12px;
+  margin-top: 10px;
+  color: var(--muted);
+}
+.manualPath input {
+  width: 100%;
+}
+.pagination {
+  justify-content: space-between;
+  gap: 10px;
+  padding: 12px 16px;
+  border-top: 1px solid var(--border);
+}
+.pagination span {
+  color: var(--muted);
+  font-size: 12px;
+}
+@media (max-width: 640px) {
+  .actions {
+    flex-basis: 100%;
+  }
+}

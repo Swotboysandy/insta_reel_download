@@ -1,8 +1,10 @@
 "use client";
+import { useMemo, useState } from "react";
 import { Download, FileVideo, History, Trash2 } from "lucide-react";
 import { Button, Input, Field, Empty, Refresh } from "./Controls";
 import TaskActivity from "./TaskActivity";
 import OutputCard from "./OutputCard";
+import styles from "./Output.module.css";
 export function DownloadWorkspace({ s }) {
   return (
     <section className="secondaryWorkspace">
@@ -72,6 +74,39 @@ export function DownloadWorkspace({ s }) {
   );
 }
 export function OutputWorkspace({ s }) {
+  const [query, setQuery] = useState("");
+  const [page, setPage] = useState(0);
+  const [playing, setPlaying] = useState(null);
+  const [copiedBatch, setCopiedBatch] = useState("");
+  const batchPaths = useMemo(() => (s.brandTask.results || [])
+    .filter((result) => result.success && result.output)
+    .map((result) => '"' + result.output.replaceAll("/", "\\") + '"')
+    .join(" "), [s.brandTask.results]);
+
+  async function copyBatchPaths() {
+    try {
+      await navigator.clipboard.writeText(batchPaths);
+      setCopiedBatch("copied");
+    } catch {
+      setCopiedBatch("manual");
+    }
+  }
+  const pageSize = 12;
+  const matches = useMemo(() => {
+    const term = query.trim().toLowerCase();
+    return s.brandedFiles
+      .filter(file => file.name.toLowerCase().includes(term))
+      .sort((a, b) => (b.modified || 0) - (a.modified || 0));
+  }, [query, s.brandedFiles]);
+  const pages = Math.ceil(matches.length / pageSize);
+  const currentPage = Math.max(0, Math.min(page, pages - 1));
+  const start = currentPage * pageSize;
+
+  function showPage(next) {
+    setPlaying(null);
+    setPage(next);
+  }
+
   return (
     <section className="secondaryWorkspace outputWorkspace">
       <div className="panel">
@@ -91,19 +126,54 @@ export function OutputWorkspace({ s }) {
           />
         </div>
         {s.outputsNote && <p className="warning">{s.outputsNote}</p>}
-        <div className="outputList">
+        {batchPaths && (
+          <div className={styles.toolbar}>
+            <Button onClick={copyBatchPaths}>Copy finished batch paths</Button>
+            {copiedBatch === "manual" ? (
+              <textarea aria-label="Finished batch file paths" readOnly value={batchPaths}
+                autoFocus onFocus={(event) => event.target.select()} />
+            ) : (
+              <p className={styles.results} role="status">
+                {copiedBatch === "copied" ? "Copied. " : ""}Paste into the File name box when uploading multiple videos on Windows.
+              </p>
+            )}
+          </div>
+        )}
+        {s.brandedFiles.length > 0 && (
+          <div className={styles.toolbar}>
+            <Input label="Find a branded video" type="search" value={query}
+              placeholder="Search by filename" onChange={value => { setQuery(value); showPage(0); }} />
+            <p className={styles.results} role="status">
+              {matches.length > 0
+                ? `Showing ${start + 1}–${Math.min(start + pageSize, matches.length)} of ${matches.length}`
+                : "No filenames match"}
+            </p>
+          </div>
+        )}
+        <div className="outputList" aria-busy={s.loadingOutputs} key={currentPage}>
           {s.loadingOutputs ? (
             <p role="status">Loading output…</p>
-          ) : s.brandedFiles.length ? (
-            s.brandedFiles.map((file) => (
-              <OutputCard key={file.path} file={file} />
+          ) : matches.length ? (
+            matches.slice(start, start + pageSize).map((file) => (
+              <OutputCard key={file.path} file={file} playable={!s.outputsNote}
+                expanded={playing === file.path}
+                onToggle={() => setPlaying(previous => previous === file.path ? null : file.path)} />
             ))
+          ) : s.brandedFiles.length ? (
+            <Button onClick={() => { setQuery(""); showPage(0); }}>Clear search</Button>
           ) : (
             <Empty icon={FileVideo} title="No output yet">
               Rendered videos will appear here for playback and saving.
             </Empty>
           )}
         </div>
+        {pages > 1 && (
+          <nav className={styles.pagination} aria-label="Output pages">
+            <Button disabled={currentPage === 0} onClick={() => showPage(currentPage - 1)}>Previous</Button>
+            <span>Page {currentPage + 1} of {pages}</span>
+            <Button disabled={currentPage + 1 >= pages} onClick={() => showPage(currentPage + 1)}>Next</Button>
+          </nav>
+        )}
       </div>
       <div className="panel">
         <TaskActivity

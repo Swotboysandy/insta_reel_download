@@ -1,6 +1,7 @@
 @import "tailwindcss";
 :root {
   color-scheme: dark;
+  --font-sans: Inter, "Segoe UI", Arial;
   --bg: #141516;
   --surface: #1c1d1e;
   --surface2: #242628;
@@ -1202,4 +1203,57 @@ fieldset {
   input:not([type="checkbox"]):not([type="range"]):not([type="color"]) {
   border: 0;
   background: transparent;
+}
+
+/* Local import uses a native file input and progress element, styled for the studio. */
+.importDesk {
+  margin: 0 0 20px;
+  padding: 16px 20px;
+  background: var(--surface);
+  border: 1px dashed #796956;
+  border-radius: 12px;
+}
+.importDesk.dragging { border-color: var(--accent); background: #312a23; }
+.importLine, .importPicker, .importIcon, .headerNote, .libraryPages {
+  display: flex;
+  align-items: center;
+}
+.importLine { gap: 14px; }
+.importIntro { flex: 1; min-width: 0; }
+.importIntro h3 { font-size: 16px; font-weight: 650; }
+.importIntro p, .importStatus, .libraryPages { color: var(--muted); font-size: 12px; }
+.importIcon {
+  width: 44px;
+  height: 44px;
+  justify-content: center;
+  background: #322b25;
+  color: var(--accent);
+  border-radius: 10px;
+}
+.importPicker {
+  position: relative;
+  overflow: hidden;
+  gap: 8px;
+  padding: 9px 15px;
+  border-radius: 8px;
+  background: var(--accent);
+  color: #241a13;
+  font-weight: 650;
+  cursor: pointer;
+}
+.importPicker:hover { filter: brightness(1.06); }
+.importPicker:focus-within { outline: 2px solid var(--text); outline-offset: 3px; }
+.importPicker.busy { opacity: .55; }
+.importPicker input { position: absolute; inset: 0; opacity: 0; width: 100%; cursor: inherit; }
+.importStatus { margin-top: 12px; border-top: 1px solid var(--border); padding-top: 10px; overflow-wrap: anywhere; }
+.importStatus progress { width: 100%; height: 5px; accent-color: var(--accent); }
+.importStatus details { color: var(--danger); }
+.importStatus ul { max-height: 8em; overflow: auto; padding-left: 20px; }
+.headerNote { gap: 7px; }
+.libraryPages { justify-content: space-between; gap: 12px; padding: 6px 16px; }
+@media (max-width: 600px) {
+  .importDesk { padding: 14px; }
+  .importLine { flex-wrap: wrap; }
+  .importPicker { width: 100%; justify-content: center; }
+  .headerNote { display: none; }
 }

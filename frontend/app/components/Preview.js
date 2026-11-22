@@ -1,6 +1,5 @@
 "use client";
 import {
-  Eye,
   RefreshCw,
   CheckCircle2,
   AlertCircle,
@@ -36,13 +35,11 @@ export default function Preview({ s, reviewed, onReview }) {
             <div className="previewEmpty">
               <Clapperboard size={40} strokeWidth={1} />
               <h3>
-                Your next reel,
-                <br />
-                before it goes live.
+                {file ? "Preview this clip" : "Choose your first clip"}
               </h3>
               <p>
                 {file
-                  ? "Generating a frame with your settings…"
+                  ? s.isPreviewLoading ? "Generating a frame…" : "Generate a still to check your branding."
                   : "Select a clip from the library to see the branded frame here."}
               </p>
             </div>
@@ -52,7 +49,7 @@ export default function Preview({ s, reviewed, onReview }) {
               <AlertCircle size={15} />{" "}
               {s.previewError
                 ? "Preview failed"
-                : "Settings changed · updating preview"}
+                : "Generate a new frame to review these settings"}
             </div>
           )}
         </div>
@@ -66,7 +63,7 @@ export default function Preview({ s, reviewed, onReview }) {
         disabled={!file || s.isPreviewLoading}
         onClick={() => s.generatePreview()}
       >
-        <RefreshCw size={15} /> Refresh preview
+        <RefreshCw size={15} /> {s.previewImage ? "Update preview" : "Generate preview"}
       </Button>
       {s.previewError && (
         <p className="warning" role="alert">
@@ -88,8 +85,7 @@ export default function Preview({ s, reviewed, onReview }) {
         {reviewed && s.previewFresh && <CheckCircle2 size={18} />}
       </label>
       <p className="footnote">
-        Backend-rendered still · first selected clip. Review every finished
-        video before publishing.
+        Preview shows the first selected clip.
       </p>
     </section>
   );

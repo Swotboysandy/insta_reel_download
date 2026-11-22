@@ -1,23 +1,28 @@
 "use client";
-import { useState } from "react";
-import { Check, Clapperboard, Search, Undo2, Eye } from "lucide-react";
+import { useMemo, useState } from "react";
+import { Clapperboard, Search, Undo2, Eye } from "lucide-react";
 import { Button, Refresh, Empty } from "./Controls";
 const stem = (name) => name.replace(/\.[^.]+$/, "");
 export default function Library({ s }) {
   const [filter, setFilter] = useState("all");
   const [undo, setUndo] = useState(null);
-  const hasOutput = (file) =>
-    s.brandedFiles.some(
-      (out) => stem(out.name) === `${stem(file.name)}_branded`,
-    );
+  const [pageRequest, setPageRequest] = useState(1);
+  const perPage = 24;
+  const outputs = useMemo(() => new Set(s.brandedFiles.map((file) => stem(file.name))), [s.brandedFiles]);
+  const hasOutput = (file) => outputs.has(stem(file.name) + "_branded");
   const files = s.filteredFiles.filter((file) =>
-    filter === "selected"
-      ? s.selectedVideos.includes(file.path)
-      : filter === "unbranded"
-        ? !hasOutput(file)
-        : true,
+    filter === "selected" ? s.selectedPaths.has(file.path) :
+    filter === "unbranded" ? !hasOutput(file) : true,
   );
-  const groups = Object.groupBy(files, (file) => file.folder || "Root");
+  const pageCount = Math.max(1, Math.ceil(files.length / perPage));
+  const page = Math.min(pageRequest, pageCount);
+  const groups = new Map();
+  const pageFiles = files.slice((page - 1) * perPage, page * perPage);
+  for (const file of pageFiles) {
+    const key = file.folder || "Root";
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(file);
+  }
   function change(next) {
     setUndo([...s.selectedVideos]);
     s.setSelectedVideos(next);
@@ -46,7 +51,7 @@ export default function Library({ s }) {
           aria-label="Search clips"
           placeholder="Search name or folder…"
           value={s.fileFilter}
-          onChange={(e) => s.setFileFilter(e.target.value)}
+          onChange={(e) => { setPageRequest(1); s.setFileFilter(e.target.value); }}
         />
       </div>
       <div className="filterRow" aria-label="Filter library">
@@ -58,7 +63,7 @@ export default function Library({ s }) {
           <button
             key={key}
             aria-pressed={filter === key}
-            onClick={() => setFilter(key)}
+            onClick={() => { setPageRequest(1); setFilter(key); }}
           >
             {label}
           </button>
@@ -68,10 +73,10 @@ export default function Library({ s }) {
         <label>
           <input
             type="checkbox"
-            aria-label="Select all visible clips"
+            aria-label="Select all matching clips"
             checked={
               !!files.length &&
-              files.every((f) => s.selectedVideos.includes(f.path))
+              files.every((f) => s.selectedPaths.has(f.path))
             }
             onChange={(e) =>
               change(
@@ -88,7 +93,7 @@ export default function Library({ s }) {
               )
             }
           />{" "}
-          Select visible <span className="count">{files.length}</span>
+          Select all matches <span className="count">{files.length}</span>
         </label>
         <button
           className="textButton"
@@ -114,7 +119,7 @@ export default function Library({ s }) {
           >
             {s.downloadedFiles.length
               ? "Try another filter or search."
-              : "Download a reel or profile to get started."}
+              : "Import an MP4 above or download reels from Instagram."}
             {!s.downloadedFiles.length && (
               <Button onClick={() => s.setActiveTab("download")}>
                 Add reels
@@ -122,7 +127,7 @@ export default function Library({ s }) {
             )}
           </Empty>
         ) : (
-          Object.entries(groups).map(([folder, items]) => (
+          Array.from(groups).map(([folder, items]) => (
             <section className="folderGroup" key={folder}>
               <div className="folderHeading">
                 <h3>{folder}</h3>
@@ -130,21 +135,21 @@ export default function Library({ s }) {
                   className="textButton"
                   onClick={() => {
                     setUndo([...s.selectedVideos]);
-                    s.toggleFolder(items);
+                    s.toggleFolder(files.filter((file) => (file.folder || "Root") === folder));
                   }}
                 >
-                  Select folder
+                  {files.filter((file) => (file.folder || "Root") === folder).every((file) => s.selectedPaths.has(file.path)) ? "Clear folder" : "Select folder"}
                 </button>
               </div>
               {items.map((file) => (
                 <div
                   key={file.path}
-                  className={`clipRow ${s.selectedVideos.includes(file.path) ? "selected" : ""}`}
+                  className={`clipRow ${s.selectedPaths.has(file.path) ? "selected" : ""}`}
                 >
                   <label>
                     <input
                       type="checkbox"
-                      checked={s.selectedVideos.includes(file.path)}
+                      checked={s.selectedPaths.has(file.path)}
                       onChange={() => {
                         setUndo([...s.selectedVideos]);
                         s.toggleVideo(file.path);
@@ -184,6 +189,13 @@ export default function Library({ s }) {
           ))
         )}
       </div>
+      {pageCount > 1 && (
+        <nav className="libraryPages" aria-label="Clip library pages">
+          <button className="textButton" disabled={page === 1} onClick={() => setPageRequest(page - 1)}>Previous</button>
+          <span>{page} / {pageCount}</span>
+          <button className="textButton" disabled={page === pageCount} onClick={() => setPageRequest(page + 1)}>Next</button>
+        </nav>
+      )}
       <div className="libraryFooter">
         <span>
           <strong>{s.selectedVideos.length}</strong> selected ·{" "}

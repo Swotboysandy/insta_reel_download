@@ -1,19 +1,13 @@
 "use client";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
-  API_BASE_URL,
   STORAGE_KEY,
   DL_STORAGE_KEY,
-  CAPTION_LIMIT,
   brandDefaults,
   apiUrl,
-  classNames,
-  groupFiles,
   cleanPath,
   buildProfileConfig,
   buildConfig,
-  getProgress,
-  outputVideoUrl,
   requestJson,
 } from "../lib/studio";
 export function useStudio() {
@@ -33,6 +27,9 @@ export function useStudio() {
     logs: [],
   });
   const [brandForm, setBrandForm] = useState(brandDefaults);
+  const [brandPresets, setBrandPresets] = useState([]);
+  const [clipImport, setClipImport] = useState(null);
+  const importBusy = useRef(false);
   const [brandFormHydrated, setBrandFormHydrated] = useState(false);
   const [downloadedFiles, setDownloadedFiles] = useState([]);
   const [selectedVideos, setSelectedVideos] = useState([]);
@@ -46,6 +43,7 @@ export function useStudio() {
     logs: [],
   });
   const [previewKey, setPreviewKey] = useState("");
+  const [previewRevision, setPreviewRevision] = useState(0);
   const [previewError, setPreviewError] = useState("");
   const [runVideos, setRunVideos] = useState([]);
   const [previewImage, setPreviewImage] = useState(null);
@@ -65,9 +63,7 @@ export function useStudio() {
 
   const downloadPollRef = useRef(null);
   const brandPollRef = useRef(null);
-  const previewTimerRef = useRef(null);
   const previewSeqRef = useRef(0);
-  const hasGeneratedPreviewRef = useRef(false);
   // Keeps the output folder of the running brand task accessible inside the poll closure
   const brandOutputFolderRef = useRef("");
 
@@ -141,6 +137,9 @@ export function useStudio() {
   // Load history on first mount so the hero shows accurate count
   useEffect(() => {
     void loadHistory();
+    requestJson("/api/brand/presets")
+      .then((data) => setBrandPresets(data.presets || []))
+      .catch((error) => setErrorMessage(error.message));
   }, []);
 
   useEffect(() => {
@@ -229,6 +228,51 @@ export function useStudio() {
 
   function updateBrandForm(key, value) {
     setBrandForm((previous) => ({ ...previous, [key]: value }));
+  }
+
+  function applyBrandPreset(id) {
+    const preset = brandPresets.find((item) => item.id === id);
+    setBrandForm((previous) => ({
+      ...previous,
+      brandPreset: preset?.id || "",
+      ...(preset && { pageName: preset.page_name, handle: preset.handle, logoPath: preset.avatar_image }),
+    }));
+  }
+
+  async function importClips(input) {
+    const files = Array.from(input);
+    if (importBusy.current || !files.length) return;
+    importBusy.current = true;
+    const errors = [];
+    const added = [];
+    const progress = (name, done) => setClipImport({
+      name, done, total: files.length, added: added.length, errors: [...errors],
+    });
+    try {
+      for (const [index, file] of files.entries()) {
+        progress(file.name, index);
+        try {
+          if (!/\.mp4$/i.test(file.name)) throw new Error("Choose an MP4 file.");
+          if (file.size > 512 * 1024 * 1024) throw new Error("File exceeds 512 MiB.");
+          const clip = await requestJson("/api/library/import?name=" + encodeURIComponent(file.name), {
+            method: "POST", headers: { "Content-Type": "video/mp4" }, body: file,
+          });
+          added.push(clip);
+        } catch (error) {
+          errors.push(file.name + " — " + error.message);
+        }
+      }
+      if (added.length) {
+        const paths = added.map((clip) => clip.path);
+        const newPaths = new Set(paths);
+        setDownloadedFiles((prev) => [...added, ...prev.filter((clip) => !newPaths.has(clip.path))]);
+        setSelectedVideos((prev) => [...new Set([...prev, ...paths])]);
+        setFileFilter("");
+      }
+    } finally {
+      importBusy.current = false;
+      progress("", files.length);
+    }
   }
 
   function setTheme(theme) {
@@ -348,6 +392,7 @@ export function useStudio() {
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             videoPath: selectedVideos[0],
+            quick: true,
             caption: brandForm.caption,
             profileConfig: buildProfileConfig(brandForm),
             config: buildConfig(brandForm),
@@ -359,9 +404,9 @@ export function useStudio() {
         // Drop the result if a newer preview was requested in the meantime
         if (seq !== previewSeqRef.current) return;
         setPreviewImage(`data:image/png;base64,${data.preview}`);
+        setPreviewRevision(seq);
         setPreviewKey(JSON.stringify([brandForm, selectedVideos[0]]));
         setPreviewWarning(data.warning || "");
-        hasGeneratedPreviewRef.current = true;
       } catch (error) {
         if (seq !== previewSeqRef.current) return;
         setPreviewError(error.message);
@@ -375,34 +420,16 @@ export function useStudio() {
     [brandForm, selectedVideos],
   );
 
-  // Generate the first frame on selection, then refresh after settings change.
+  // Drop previews for a clip that has been removed, including late responses.
+  const previewPath = selectedVideos[0] || "";
   useEffect(() => {
-    if (!brandFormHydrated) return;
-    if (!selectedVideos.length) return;
-
-    if (previewTimerRef.current) window.clearTimeout(previewTimerRef.current);
-    previewTimerRef.current = window.setTimeout(() => {
-      void generatePreview({ silent: true });
-    }, 700);
-
-    return () => {
-      if (previewTimerRef.current) window.clearTimeout(previewTimerRef.current);
-    };
-  }, [
-    brandForm.caption,
-    brandForm.bgColor,
-    brandForm.textColor,
-    brandForm.logoColor,
-    brandForm.logoPath,
-    brandForm.bgPath,
-    brandForm.pageName,
-    brandForm.handle,
-    brandForm.maskTop,
-    brandForm.maskBot,
-    selectedVideos,
-    brandFormHydrated,
-    generatePreview,
-  ]);
+    previewSeqRef.current += 1;
+    setIsPreviewLoading(false);
+    setPreviewImage(null);
+    setPreviewWarning("");
+    setPreviewError("");
+    setPreviewKey("");
+  }, [previewPath]);
 
   async function startBranding() {
     if (!selectedVideos.length) {
@@ -603,20 +630,12 @@ export function useStudio() {
     });
   }, [downloadedFiles, fileFilter]);
 
-  const groupedFiles = useMemo(
-    () => groupFiles(filteredFiles),
-    [filteredFiles],
+  const selectedPaths = useMemo(() => new Set(selectedVideos), [selectedVideos]);
+  const selectedSizeMb = useMemo(
+    () => downloadedFiles.reduce((sum, file) =>
+      selectedPaths.has(file.path) ? sum + Number(file.size_mb || 0) : sum, 0),
+    [downloadedFiles, selectedPaths],
   );
-  const selectedSizeMb = downloadedFiles
-    .filter((file) => selectedVideos.includes(file.path))
-    .reduce((sum, file) => sum + Number(file.size_mb || 0), 0);
-  const downloadProgress = getProgress(
-    downloadTask.current,
-    downloadTask.total,
-  );
-  const brandProgress = getProgress(brandTask.current, brandTask.total);
-  const captionLen = brandForm.caption.length;
-  const captionOver = captionLen > CAPTION_LIMIT;
 
   const previewFresh =
     !!previewImage &&
@@ -641,7 +660,12 @@ export function useStudio() {
     fileFilter,
     setFileFilter,
     filteredFiles,
-    groupedFiles,
+    selectedPaths,
+    importClips,
+    clipImport,
+    brandPresets,
+    applyBrandPreset,
+    previewRevision,
     selectedSizeMb,
     brandTask,
     startBranding,
