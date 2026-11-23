@@ -19,6 +19,7 @@ import textwrap
 import json
 import base64
 import mimetypes
+import hashlib
 import subprocess
 import tempfile
 from io import BytesIO
@@ -1583,6 +1584,22 @@ def _run_brand_ffmpeg(video_path, output_path, caption, cfg, profile_cfg, mask_t
         return _encode_brand(video_path, output_path, caption, cfg, profile_cfg, mask_top, mask_bot, preview, quick)
 
 
+def source_identity(video_path):
+    """A stable id for the SOURCE clip, unchanged by re-branding.
+
+    Instalaz fingerprints hosted media by its bytes, which is rename-proof but
+    not re-encode-proof: every time we re-render the library the bytes change,
+    the fingerprint changes, and already-posted clips look brand new. Hashing
+    the untouched source instead gives an id that survives any number of
+    re-renders, so posting history keeps pointing at the right thing.
+    """
+    h = hashlib.sha256()
+    with open(video_path, "rb") as fh:
+        for block in iter(lambda: fh.read(8 * 1024 * 1024), b""):
+            h.update(block)
+    return h.hexdigest()[:32]
+
+
 def _encode_brand(video_path, output_path, caption, cfg, profile_cfg, mask_top, mask_bot, preview=False, quick=False):
     cfg, profile_cfg = _resolve_brand_preset(cfg, profile_cfg)
     cfg = {**BRAND_DEFAULTS, **cfg}
@@ -1616,6 +1633,9 @@ def _encode_brand(video_path, output_path, caption, cfg, profile_cfg, mask_top, 
                 # Delivery quality: crisp text without lossless upload sizes.
                 "-crf", "22", "-pix_fmt", "yuv420p", "-threads", str(BRAND_THREADS),
                 "-c:a", "aac", "-b:a", "128k", "-movflags", "+faststart"]
+        # Stamp the source id into the file so the posting history survives a
+        # re-render. Read it back with: ffprobe -show_entries format_tags=comment
+        cmd += ["-metadata", "comment=instalaz_key=%s" % source_identity(video_path)]
         pitch = float(cfg.get("audio_pitch", 1) or 1)
         if abs(pitch-1) >= .001:
             if not .5 <= pitch <= 2:
