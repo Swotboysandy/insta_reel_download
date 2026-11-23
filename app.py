@@ -6,6 +6,7 @@ from werkzeug.exceptions import ClientDisconnected
 from werkzeug.utils import secure_filename
 import instaloader
 import browser_media
+from collections import Counter
 import os
 import random
 import threading
@@ -117,15 +118,23 @@ BRAND_DEFAULTS = {
     "content_bottom_gap": 26,
     # Empty space below the identity row, which is what shrinks the picture.
     "content_bottom_margin": 300,
+    # Match the frame, the profile row and the watermark to the clip's own
+    # background so a white meme card does not sit in a black box. Set false to
+    # force the bg_color/text_color below instead.
+    "auto_background": True,
     # Draw the caption line under the handle. Off keeps the row to avatar,
     # name, tick and handle only.
     "footer_caption": False,
     # Normalized source coordinates [x, y, width, height], before scaling.
     # Example: {"fboy": {"enabled": True, "region": [.85, .25, .15, .08]}}
     "video_watermark_path": "",  # Empty path or position="off" disables it.
-    "video_watermark_position": "top-left",
+    # Bottom-right: meme captions sit at the top of the picture, so a top
+    # corner collides with the words once the blank margins are trimmed.
+    "video_watermark_position": "bottom-right",
     "video_watermark_width_fraction": 0.22,
-    "video_watermark_opacity": 0.14,
+    # Barely there on purpose: enough to survive a repost, not enough to read
+    # as part of the meme.
+    "video_watermark_opacity": 0.07,
     "source_watermarks": {},
     "source_watermark": {"enabled": False},
 }
@@ -1157,6 +1166,61 @@ def _render_profile_label(name, font_size=28):
 # Removed _detect_content_box because we now use manual mask sliders
 
 
+def _source_background(video_path):
+    """Sample a frame's border to find the clip's own background colour.
+
+    Meme cards are usually a flat white or black field with the picture inset,
+    so the outer edge is a reliable read. Returns an (r, g, b) tuple.
+    """
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            shot = os.path.join(tmp, "bg.png")
+            subprocess.run(["ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "error",
+                            "-ss", "1", "-i", video_path, "-frames:v", "1", "-y", shot],
+                           check=True)
+            with Image.open(shot) as frame:
+                rgb = frame.convert("RGB")
+                w, h = rgb.size
+                step = max(1, w // 60)
+                edge = []
+                for x in range(0, w, step):
+                    edge.append(rgb.getpixel((x, 1)))
+                    edge.append(rgb.getpixel((x, h - 2)))
+                for y in range(0, h, max(1, h // 60)):
+                    edge.append(rgb.getpixel((1, y)))
+                    edge.append(rgb.getpixel((w - 2, y)))
+    except Exception:
+        return tuple(BRAND_DEFAULTS["bg_color"])
+    if not edge:
+        return tuple(BRAND_DEFAULTS["bg_color"])
+    # The most common edge colour, not the mean: averaging a white card against
+    # a dark photo strip gives a muddy grey that matches neither.
+    common = Counter((p[0] // 16, p[1] // 16, p[2] // 16) for p in edge).most_common(1)[0][0]
+    bucket = [p for p in edge if (p[0] // 16, p[1] // 16, p[2] // 16) == common]
+    return tuple(sum(c[i] for c in bucket) // len(bucket) for i in range(3))
+
+
+def _apply_auto_palette(cfg, video_path, profile_cfg):
+    """Point the frame, panel and watermark at the clip's own background."""
+    if not cfg.get("auto_background", False):
+        return cfg, profile_cfg
+    background = _source_background(video_path)
+    cfg = dict(cfg)
+    cfg["bg_color"] = list(background)
+    light = sum(background) / 3 > 140
+    cfg["text_color"] = [17, 17, 20] if light else [255, 255, 255]
+    cfg["_handle_color"] = [110, 110, 118] if light else [150, 150, 158]
+    # Swap to the black wordmark over light footage, white over dark.
+    path = _clean_path(cfg.get("video_watermark_path", ""))
+    if path:
+        want = "watermark-black" if light else "watermark-white"
+        other = "watermark-white" if light else "watermark-black"
+        swapped = path.replace(other, want)
+        if swapped != path and os.path.isfile(swapped):
+            cfg["video_watermark_path"] = swapped
+    return cfg, profile_cfg
+
+
 def _render_profile_footer(caption, cfg, profile_cfg):
     """Build the entire dark profile/caption panel once, never per video frame."""
     w, h = int(cfg["target_width"]), int(cfg["profile_footer_height"])
@@ -1190,7 +1254,7 @@ def _render_profile_footer(caption, cfg, profile_cfg):
     nf = _find_font(round(36 * scale), bold=True)
     while d.textlength(name, font=nf) > max(1, w - x - margin - 40) and len(name) > 1:
         name = name[:-2] + "?"
-    d.text((x, y-2), name, font=nf, fill="white")
+    d.text((x, y-2), name, font=nf, fill=tuple(cfg.get("text_color", [255, 255, 255])))
     bx = x + round(d.textlength(name, font=nf)) + 12
     if name and profile.get("verified", True):
         d.ellipse((bx, y+7, bx+26, y+33), fill=(29, 155, 240))
@@ -1201,7 +1265,7 @@ def _render_profile_footer(caption, cfg, profile_cfg):
         handle = "@" + handle.lstrip("@")
         while d.textlength(handle, font=hf) > w-x-margin and len(handle) > 1:
             handle = handle[:-2] + "?"
-        d.text((x, y+43), handle, font=hf, fill=(150, 150, 158))
+        d.text((x, y+43), handle, font=hf, fill=tuple(cfg.get("_handle_color", [150, 150, 158])))
     if not cfg.get("footer_caption", True):
         opacity = max(0., min(1., float(cfg.get("watermark_opacity", .92))))
         img.putalpha(round(255 * opacity))
@@ -1230,6 +1294,61 @@ def _render_profile_footer(caption, cfg, profile_cfg):
     opacity = max(0., min(1., float(cfg.get("watermark_opacity", .92))))
     img.putalpha(round(255 * opacity))
     return img
+
+
+def _content_bbox(video_path, background):
+    """Bounding box of the pixels that differ from the clip's own background.
+
+    Meme cards carry wide blank margins baked into the source. Trimming them
+    lets the real content run full width inside our frame instead of being
+    scaled down to fit around its own padding. Works for any flat background
+    colour, unlike the black-only canvas split above. Returns an even-aligned
+    (x, y, w, h) in source pixels, or None when there is nothing worth cutting.
+    """
+    try:
+        info = _source_video_info(video_path)
+        sw, sh = info["size"]
+        sample_w = min(320, sw)
+        sample_h = round(sh * sample_w / sw) // 2 * 2
+        masks = []
+        for fraction in (.15, .5, .85):
+            result = subprocess.run([
+                _ffmpeg_exe(), "-v", "error", "-ss", str(info["duration"] * fraction),
+                "-threads", "1", "-i", video_path, "-frames:v", "1", "-vf",
+                f"scale={sample_w}:{sample_h},format=rgb24", "-threads", "1",
+                "-f", "rawvideo", "pipe:1"], capture_output=True, check=True)
+            if len(result.stdout) != sample_w * sample_h * 3:
+                return None
+            frame = np.frombuffer(result.stdout, np.uint8).reshape(sample_h, sample_w, 3).astype(np.int16)
+            masks.append(np.abs(frame - np.array(background, np.int16)).max(axis=2) > 26)
+        # Union across time: a shot that briefly matches the background must not
+        # shrink the box and clip the content on other frames.
+        mask = np.any(masks, axis=0)
+    except Exception:
+        return None
+    rows = np.flatnonzero(mask.mean(axis=1) > .01)
+    cols = np.flatnonzero(mask.mean(axis=0) > .01)
+    if not len(rows) or not len(cols):
+        return None
+    pad = 2
+    y0 = max(0, int(rows[0]) - pad)
+    y1 = min(sample_h, int(rows[-1]) + 1 + pad)
+    x0 = max(0, int(cols[0]) - pad)
+    x1 = min(sample_w, int(cols[-1]) + 1 + pad)
+    if (y1 - y0) < sample_h * .2 or (x1 - x0) < sample_w * .2:
+        return None
+    trimmed = (sample_h - (y1 - y0)) / sample_h + (sample_w - (x1 - x0)) / sample_w
+    if trimmed < .04:
+        return None
+    def to_source(value, sample, actual):
+        return max(0, min(actual, round(value * actual / sample / 2) * 2))
+    sx0 = to_source(x0, sample_w, sw)
+    sy0 = to_source(y0, sample_h, sh)
+    sx1 = to_source(x1, sample_w, sw)
+    sy1 = to_source(y1, sample_h, sh)
+    if sx1 - sx0 < 2 or sy1 - sy0 < 2:
+        return None
+    return sx0, sy0, sx1 - sx0, sy1 - sy0
 
 
 def _source_framing(video_path):
@@ -1328,12 +1447,9 @@ def _composite_video_watermark(panel, cfg, frame_size, footage_rect, panel_y):
     my = y+margin if position.startswith("top") else y+height-margin-mark.height
     overlay = Image.new("RGBA", frame_size)
     overlay.alpha_composite(panel, (0, panel_y))
-    # A subtle static dark edge keeps white lettering readable on light footage.
-    # Clip the halo to the mark box so it cannot escape the footage rectangle.
-    edge = mark.getchannel("A").filter(ImageFilter.MaxFilter(5)).filter(ImageFilter.GaussianBlur(.6))
-    shadow = Image.new("RGBA", mark.size, (0, 0, 0, 0))
-    shadow.putalpha(edge)
-    overlay.alpha_composite(shadow, (mx, my))
+    # No contrast halo. It was there to keep white lettering legible on light
+    # footage, but it reads as a dark smudge at the low opacity we want, and
+    # the mark now swaps to its black version over light clips anyway.
     overlay.alpha_composite(mark, (mx, my))
     bounds = overlay.getbbox()
     return overlay.crop((0, bounds[1], frame_size[0], bounds[3])), bounds[1]
@@ -1346,6 +1462,8 @@ def _branding_filter(video_path, cfg, caption, profile_cfg, mask_top, mask_bot, 
     Footage covers all space left by the caption and the unchanged profile row.
     Masks only paint pixels.
     """
+    cfg, profile_cfg = _apply_auto_palette(cfg, video_path, profile_cfg)
+    pad_colour = "0x%02x%02x%02x" % tuple(cfg.get("bg_color", [0, 0, 0]))
     w, h = int(cfg["target_width"]), int(cfg["target_height"])
     if w < 2 or h < 2 or w % 2 or h % 2:
         raise ValueError("Target dimensions must be positive even numbers")
@@ -1387,10 +1505,15 @@ def _branding_filter(video_path, cfg, caption, profile_cfg, mask_top, mask_bot, 
             source_filters.append(crops[edge])
         else:
             source_filters.append(f"drawbox=x=iw*{x}:y=ih*{y}:w=iw*{rw}:h=ih*{rh}:color=black:t=fill")
+    # Cut the clip's own blank margins so the content can run full width.
+    trim = _content_bbox(video_path, cfg["bg_color"]) if cfg.get("auto_background") else None
+    if trim:
+        tx, ty, tw, th = trim
+        source_filters.append(f"crop={tw}:{th}:{tx}:{ty}")
     source_filters.append("setsar=1")
     graph = ["[0:v]" + ",".join(source_filters) + "[source]"]
     zoom = max(1., float(cfg.get("zoom_factor", 1) or 1))
-    framing = _source_framing(video_path) if not policy.get("enabled", False) else None
+    framing = None if (trim or policy.get("enabled", False)) else _source_framing(video_path)
     caption_h = 0
     if framing:
         ct, cb = framing["caption_top"], framing["caption_bottom"]
@@ -1410,8 +1533,11 @@ def _branding_filter(video_path, cfg, caption, profile_cfg, mask_top, mask_bot, 
         base_label = "source"
     picture_h = area_h-caption_h
     zw, zh = int(w*zoom)//2*2, int(picture_h*zoom)//2*2
-    geometry = (f"scale={w}:{picture_h}:force_original_aspect_ratio=increase:flags=lanczos,"
-                f"crop={w}:{picture_h}:(iw-ow)/2:0")
+    # Fit the whole picture inside the area, never fill-and-crop. The gaps above
+    # and below shrink the area, so filling the width would slice the bottom off
+    # a 9:16 source -- which is exactly what it used to do.
+    geometry = (f"scale={w}:{picture_h}:force_original_aspect_ratio=decrease:flags=lanczos,"
+                f"pad={w}:{picture_h}:(ow-iw)/2:(oh-ih)/2:color={pad_colour}")
     if zoom > 1:
         geometry += f",scale={zw}:{zh}:flags=lanczos,crop={w}:{picture_h}"
     sharp = max(0., min(5., float(cfg.get("upscale_sharpen", 1.25))))
@@ -1428,7 +1554,7 @@ def _branding_filter(video_path, cfg, caption, profile_cfg, mask_top, mask_bot, 
     else:
         stack_label = "framed"
     content_y = ph if header else top_pad
-    graph.append(f"[{stack_label}]pad={w}:{h}:0:{content_y}:color=black[base]")
+    graph.append(f"[{stack_label}]pad={w}:{h}:0:{content_y}:color={pad_colour}[base]")
     panel, overlay_y = _composite_video_watermark(
         panel, cfg, (w, h), (0, content_y+caption_h, w, picture_h),
         0 if header else content_y+caption_h+picture_h+bottom_gap)
